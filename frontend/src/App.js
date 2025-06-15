@@ -5,6 +5,9 @@ import axios from "axios";
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
 const API = `${BACKEND_URL}/api`;
 
+// Google Maps API Key (you'll need to get this from Google Cloud Console)
+const GOOGLE_MAPS_API_KEY = "YOUR_GOOGLE_MAPS_API_KEY";
+
 // Context pour l'authentification
 const AuthContext = createContext();
 
@@ -12,11 +15,17 @@ const AuthProvider = ({ children }) => {
   const [user, setUser] = useState(null);
   const [token, setToken] = useState(localStorage.getItem('token'));
   const [loading, setLoading] = useState(true);
+  const [notifications, setNotifications] = useState([]);
 
   useEffect(() => {
     if (token) {
       axios.defaults.headers.common['Authorization'] = `Bearer ${token}`;
       fetchUser();
+      fetchNotifications();
+      
+      // Check for notifications every 30 seconds
+      const notificationInterval = setInterval(fetchNotifications, 30000);
+      return () => clearInterval(notificationInterval);
     } else {
       setLoading(false);
     }
@@ -31,6 +40,24 @@ const AuthProvider = ({ children }) => {
       logout();
     } finally {
       setLoading(false);
+    }
+  };
+
+  const fetchNotifications = async () => {
+    try {
+      const response = await axios.get(`${API}/notifications?unread_only=true`);
+      setNotifications(response.data);
+    } catch (error) {
+      console.error('Erreur lors de la récupération des notifications:', error);
+    }
+  };
+
+  const markNotificationRead = async (notificationId) => {
+    try {
+      await axios.put(`${API}/notifications/${notificationId}/read`);
+      fetchNotifications();
+    } catch (error) {
+      console.error('Erreur lors du marquage de la notification:', error);
     }
   };
 
@@ -76,11 +103,21 @@ const AuthProvider = ({ children }) => {
     localStorage.removeItem('token');
     setToken(null);
     setUser(null);
+    setNotifications([]);
     delete axios.defaults.headers.common['Authorization'];
   };
 
   return (
-    <AuthContext.Provider value={{ user, token, login, register, logout, loading }}>
+    <AuthContext.Provider value={{ 
+      user, 
+      token, 
+      login, 
+      register, 
+      logout, 
+      loading, 
+      notifications, 
+      markNotificationRead 
+    }}>
       {children}
     </AuthContext.Provider>
   );
@@ -92,6 +129,117 @@ const useAuth = () => {
     throw new Error('useAuth doit être utilisé dans un AuthProvider');
   }
   return context;
+};
+
+// Composant de notification
+const NotificationBell = () => {
+  const { notifications, markNotificationRead } = useAuth();
+  const [showNotifications, setShowNotifications] = useState(false);
+
+  return (
+    <div className="relative">
+      <button
+        onClick={() => setShowNotifications(!showNotifications)}
+        className="relative p-2 text-gray-600 hover:text-gray-800"
+      >
+        🔔
+        {notifications.length > 0 && (
+          <span className="absolute -top-1 -right-1 bg-red-500 text-white text-xs rounded-full h-5 w-5 flex items-center justify-center">
+            {notifications.length}
+          </span>
+        )}
+      </button>
+      
+      {showNotifications && (
+        <div className="absolute right-0 mt-2 w-80 bg-white rounded-lg shadow-lg border z-50">
+          <div className="p-3 border-b">
+            <h3 className="font-semibold">Notifications</h3>
+          </div>
+          <div className="max-h-64 overflow-y-auto">
+            {notifications.length === 0 ? (
+              <p className="p-3 text-gray-500">Aucune notification</p>
+            ) : (
+              notifications.map((notif) => (
+                <div
+                  key={notif.id}
+                  className="p-3 border-b hover:bg-gray-50 cursor-pointer"
+                  onClick={() => markNotificationRead(notif.id)}
+                >
+                  <p className="font-medium text-sm">{notif.title}</p>
+                  <p className="text-xs text-gray-600">{notif.message}</p>
+                  <p className="text-xs text-gray-400 mt-1">
+                    {new Date(notif.created_at).toLocaleString('fr-FR')}
+                  </p>
+                </div>
+              ))
+            )}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+};
+
+// Composant Google Maps
+const GoogleMap = ({ center, markers, onMarkerClick, style }) => {
+  const mapRef = React.useRef(null);
+  const [map, setMap] = useState(null);
+  const [googleMaps, setGoogleMaps] = useState(null);
+
+  useEffect(() => {
+    const loadGoogleMaps = () => {
+      if (window.google) {
+        setGoogleMaps(window.google);
+        return;
+      }
+
+      const script = document.createElement('script');
+      script.src = `https://maps.googleapis.com/maps/api/js?key=${GOOGLE_MAPS_API_KEY}&libraries=places`;
+      script.async = true;
+      script.defer = true;
+      script.onload = () => {
+        setGoogleMaps(window.google);
+      };
+      document.head.appendChild(script);
+    };
+
+    loadGoogleMaps();
+  }, []);
+
+  useEffect(() => {
+    if (googleMaps && mapRef.current && !map) {
+      const newMap = new googleMaps.maps.Map(mapRef.current, {
+        center: center,
+        zoom: 12,
+      });
+      setMap(newMap);
+    }
+  }, [googleMaps, center, map]);
+
+  useEffect(() => {
+    if (map && googleMaps && markers) {
+      // Clear existing markers
+      map.data.forEach((feature) => {
+        map.data.remove(feature);
+      });
+
+      // Add new markers
+      markers.forEach((marker) => {
+        const mapMarker = new googleMaps.maps.Marker({
+          position: { lat: marker.lat, lng: marker.lng },
+          map: map,
+          title: marker.title,
+          icon: marker.icon || null,
+        });
+
+        if (onMarkerClick) {
+          mapMarker.addListener('click', () => onMarkerClick(marker));
+        }
+      });
+    }
+  }, [map, googleMaps, markers, onMarkerClick]);
+
+  return <div ref={mapRef} style={style || { width: '100%', height: '400px' }} />;
 };
 
 // Composants de l'application
@@ -106,8 +254,11 @@ const Header = () => {
         </h1>
         {user && (
           <div className="flex items-center space-x-4">
+            <NotificationBell />
             <span className="text-gray-600">
-              Bonjour, {user.name} ({user.user_type === 'user' ? 'Client' : 'Technicien'})
+              Bonjour, {user.name} (
+              {user.user_type === 'user' ? 'Client' : 
+               user.user_type === 'technician' ? 'Technicien' : 'Administrateur'})
             </span>
             <button 
               onClick={logout}
