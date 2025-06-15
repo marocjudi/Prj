@@ -514,6 +514,218 @@ async def get_messages(
     messages = await db.messages.find({"intervention_id": intervention_id}).sort("created_at", 1).to_list(100)
     return [Message(**message) for message in messages]
 
+# Admin endpoints
+@api_router.get("/admin/dashboard")
+async def admin_dashboard(current_user: User = Depends(get_current_user)):
+    if current_user.user_type != UserType.ADMIN:
+        raise HTTPException(status_code=403, detail="Accès réservé aux administrateurs")
+    
+    # Get key metrics
+    total_users = await db.users.count_documents({"user_type": "user"})
+    total_technicians = await db.users.count_documents({"user_type": "technician"}) 
+    total_interventions = await db.interventions.count_documents({})
+    completed_interventions = await db.interventions.count_documents({"status": "completed"})
+    pending_interventions = await db.interventions.count_documents({"status": "pending"})
+    
+    # Revenue calculation
+    completed_payments = await db.payment_transactions.find({"payment_status": "paid"}).to_list(1000)
+    total_revenue = sum(payment.get("commission_amount", 0) for payment in completed_payments)
+    
+    # Average rating calculation
+    avg_rating_pipeline = [
+        {"$group": {"_id": None, "avg_rating": {"$avg": "$rating"}}}
+    ]
+    avg_rating_result = await db.users.aggregate(avg_rating_pipeline).to_list(1)
+    avg_rating = avg_rating_result[0]["avg_rating"] if avg_rating_result else 0
+    
+    return {
+        "total_users": total_users,
+        "total_technicians": total_technicians,
+        "total_interventions": total_interventions,
+        "completed_interventions": completed_interventions,
+        "pending_interventions": pending_interventions,
+        "completion_rate": round((completed_interventions / total_interventions * 100) if total_interventions > 0 else 0, 2),
+        "total_revenue": round(total_revenue, 2),
+        "average_rating": round(avg_rating, 2)
+    }
+
+@api_router.get("/admin/users")
+async def admin_get_users(
+    skip: int = 0,
+    limit: int = 50,
+    user_type: Optional[str] = None,
+    current_user: User = Depends(get_current_user)
+):
+    if current_user.user_type != UserType.ADMIN:
+        raise HTTPException(status_code=403, detail="Accès réservé aux administrateurs")
+    
+    query = {}
+    if user_type:
+        query["user_type"] = user_type
+    
+    users = await db.users.find(query).skip(skip).limit(limit).to_list(limit)
+    # Remove passwords from response
+    for user in users:
+        user.pop("password", None)
+    
+    return users
+
+@api_router.get("/admin/interventions")
+async def admin_get_interventions(
+    skip: int = 0,
+    limit: int = 50,
+    status: Optional[str] = None,
+    current_user: User = Depends(get_current_user)
+):
+    if current_user.user_type != UserType.ADMIN:
+        raise HTTPException(status_code=403, detail="Accès réservé aux administrateurs")
+    
+    query = {}
+    if status:
+        query["status"] = status
+    
+    interventions = await db.interventions.find(query).skip(skip).limit(limit).to_list(limit)
+    return [Intervention(**intervention) for intervention in interventions]
+
+@api_router.get("/admin/payments")
+async def admin_get_payments(
+    skip: int = 0,
+    limit: int = 50,
+    current_user: User = Depends(get_current_user)
+):
+    if current_user.user_type != UserType.ADMIN:
+        raise HTTPException(status_code=403, detail="Accès réservé aux administrateurs")
+    
+    payments = await db.payment_transactions.find({}).skip(skip).limit(limit).to_list(limit)
+    return [PaymentTransaction(**payment) for payment in payments]
+
+@api_router.put("/admin/users/{user_id}/status")
+async def admin_update_user_status(
+    user_id: str,
+    active: bool,
+    current_user: User = Depends(get_current_user)
+):
+    if current_user.user_type != UserType.ADMIN:
+        raise HTTPException(status_code=403, detail="Accès réservé aux administrateurs")
+    
+    result = await db.users.update_one(
+        {"id": user_id},
+        {"$set": {"active": active}}
+    )
+    
+    if result.matched_count == 0:
+        raise HTTPException(status_code=404, detail="Utilisateur non trouvé")
+    
+    return {"message": "Statut utilisateur mis à jour"}
+
+@api_router.post("/admin/interventions/{intervention_id}/resolve")
+async def admin_resolve_intervention(
+    intervention_id: str,
+    resolution: str,
+    current_user: User = Depends(get_current_user)
+):
+    if current_user.user_type != UserType.ADMIN:
+        raise HTTPException(status_code=403, detail="Accès réservé aux administrateurs")
+    
+    result = await db.interventions.update_one(
+        {"id": intervention_id},
+        {
+            "$set": {
+                "status": "resolved_by_admin",
+                "admin_resolution": resolution,
+                "resolved_at": datetime.utcnow(),
+                "resolved_by": current_user.id
+            }
+        }
+    )
+    
+    if result.matched_count == 0:
+        raise HTTPException(status_code=404, detail="Intervention non trouvée")
+    
+    return {"message": "Intervention résolue par l'administrateur"}
+
+# Notification endpoints
+class NotificationCreate(BaseModel):
+    user_id: str
+    title: str
+    message: str
+    type: str  # info, success, warning, error
+    data: Optional[Dict[str, Any]] = {}
+
+class Notification(BaseModel):
+    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    user_id: str
+    title: str
+    message: str
+    type: str
+    data: Optional[Dict[str, Any]] = {}
+    read: bool = False
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+
+@api_router.post("/notifications")
+async def create_notification(
+    notification_data: NotificationCreate,
+    current_user: User = Depends(get_current_user)
+):
+    # Only admin or system can create notifications for other users
+    if current_user.user_type != UserType.ADMIN and notification_data.user_id != current_user.id:
+        raise HTTPException(status_code=403, detail="Accès refusé")
+    
+    notification = Notification(**notification_data.dict())
+    await db.notifications.insert_one(notification.dict())
+    return notification
+
+@api_router.get("/notifications")
+async def get_notifications(
+    unread_only: bool = False,
+    current_user: User = Depends(get_current_user)
+):
+    query = {"user_id": current_user.id}
+    if unread_only:
+        query["read"] = False
+    
+    notifications = await db.notifications.find(query).sort("created_at", -1).limit(50).to_list(50)
+    return [Notification(**notification) for notification in notifications]
+
+@api_router.put("/notifications/{notification_id}/read")
+async def mark_notification_read(
+    notification_id: str,
+    current_user: User = Depends(get_current_user)
+):
+    result = await db.notifications.update_one(
+        {"id": notification_id, "user_id": current_user.id},
+        {"$set": {"read": True}}
+    )
+    
+    if result.matched_count == 0:
+        raise HTTPException(status_code=404, detail="Notification non trouvée")
+    
+    return {"message": "Notification marquée comme lue"}
+
+@api_router.post("/notifications/send-push")
+async def send_push_notification(
+    user_id: str,
+    title: str,
+    message: str,
+    current_user: User = Depends(get_current_user)
+):
+    if current_user.user_type != UserType.ADMIN:
+        raise HTTPException(status_code=403, detail="Accès réservé aux administrateurs")
+    
+    # Create notification in database
+    notification = Notification(
+        user_id=user_id,
+        title=title,
+        message=message,
+        type="info"
+    )
+    await db.notifications.insert_one(notification.dict())
+    
+    # TODO: Integrate with push notification service (Firebase, OneSignal, etc.)
+    # For now, just store in database
+    
+    return {"message": "Notification push envoyée"}
+
 # Include the router in the main app
 app.include_router(api_router)
 
