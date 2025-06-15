@@ -748,6 +748,8 @@ const TechnicianDashboard = () => {
   const { user } = useAuth();
   const [interventions, setInterventions] = useState([]);
   const [available, setAvailable] = useState(user?.available || false);
+  const [nearbyTechnicians, setNearbyTechnicians] = useState([]);
+  const [userLocation, setUserLocation] = useState(null);
 
   useEffect(() => {
     fetchInterventions();
@@ -758,6 +760,11 @@ const TechnicianDashboard = () => {
     if (navigator.geolocation) {
       navigator.geolocation.getCurrentPosition(
         (position) => {
+          const location = {
+            lat: position.coords.latitude,
+            lng: position.coords.longitude
+          };
+          setUserLocation(location);
           console.log('Position technicien obtenue:', position.coords);
           // TODO: Mettre à jour la position du technicien en base
         },
@@ -808,8 +815,30 @@ const TechnicianDashboard = () => {
     }
   };
 
+  const openGoogleMapsNavigation = (intervention) => {
+    if (intervention.user_latitude && intervention.user_longitude) {
+      const destination = `${intervention.user_latitude},${intervention.user_longitude}`;
+      const url = `https://www.google.com/maps/dir/?api=1&destination=${destination}`;
+      window.open(url, '_blank');
+    } else if (intervention.user_address) {
+      const destination = encodeURIComponent(intervention.user_address);
+      const url = `https://www.google.com/maps/dir/?api=1&destination=${destination}`;
+      window.open(url, '_blank');
+    }
+  };
+
   const availableInterventions = interventions.filter(i => i.status === 'pending');
   const myInterventions = interventions.filter(i => i.technician_id === user?.id);
+
+  // Markers for map
+  const mapMarkers = availableInterventions
+    .filter(i => i.user_latitude && i.user_longitude)
+    .map(intervention => ({
+      lat: intervention.user_latitude,
+      lng: intervention.user_longitude,
+      title: intervention.title,
+      intervention
+    }));
 
   return (
     <div className="container mx-auto px-4 py-8">
@@ -829,6 +858,34 @@ const TechnicianDashboard = () => {
           </button>
         </div>
       </div>
+
+      {/* Carte des interventions disponibles */}
+      {userLocation && mapMarkers.length > 0 && (
+        <div className="mb-8">
+          <h3 className="text-xl font-semibold mb-4">Carte des interventions disponibles</h3>
+          <GoogleMap
+            center={userLocation}
+            markers={[
+              {
+                lat: userLocation.lat,
+                lng: userLocation.lng,
+                title: "Ma position",
+                icon: "https://maps.google.com/mapfiles/ms/icons/blue-dot.png"
+              },
+              ...mapMarkers.map(marker => ({
+                ...marker,
+                icon: "https://maps.google.com/mapfiles/ms/icons/red-dot.png"
+              }))
+            ]}
+            onMarkerClick={(marker) => {
+              if (marker.intervention) {
+                acceptIntervention(marker.intervention.id);
+              }
+            }}
+            style={{ width: '100%', height: '300px' }}
+          />
+        </div>
+      )}
 
       <div className="grid md:grid-cols-2 gap-8">
         {/* Interventions disponibles */}
@@ -852,12 +909,28 @@ const TechnicianDashboard = () => {
                   <div>Budget: {intervention.budget_min}€ - {intervention.budget_max}€</div>
                 </div>
 
-                <button
-                  onClick={() => acceptIntervention(intervention.id)}
-                  className="mt-3 w-full bg-blue-500 text-white py-2 px-4 rounded hover:bg-blue-600"
-                >
-                  Accepter cette intervention
-                </button>
+                {intervention.user_address && (
+                  <div className="text-xs text-gray-500 mt-2">
+                    📍 {intervention.user_address}
+                  </div>
+                )}
+
+                <div className="flex space-x-2 mt-3">
+                  <button
+                    onClick={() => acceptIntervention(intervention.id)}
+                    className="flex-1 bg-blue-500 text-white py-2 px-4 rounded hover:bg-blue-600"
+                  >
+                    Accepter
+                  </button>
+                  {intervention.service_type === 'onsite' && intervention.user_address && (
+                    <button
+                      onClick={() => openGoogleMapsNavigation(intervention)}
+                      className="bg-green-500 text-white py-2 px-4 rounded hover:bg-green-600"
+                    >
+                      🗺️ Navigation
+                    </button>
+                  )}
+                </div>
               </div>
             ))}
             
@@ -895,6 +968,12 @@ const TechnicianDashboard = () => {
                   Budget: {intervention.budget_min}€ - {intervention.budget_max}€
                 </div>
 
+                {intervention.user_address && (
+                  <div className="text-xs text-gray-500 mt-1">
+                    📍 {intervention.user_address}
+                  </div>
+                )}
+
                 {intervention.status === 'assigned' && (
                   <div className="mt-3 space-y-2">
                     <input
@@ -905,28 +984,48 @@ const TechnicianDashboard = () => {
                       className="w-full px-3 py-2 border border-gray-300 rounded text-sm"
                       id={`price-${intervention.id}`}
                     />
-                    <button
-                      onClick={() => {
-                        const priceInput = document.getElementById(`price-${intervention.id}`);
-                        const price = priceInput.value;
-                        if (price) {
-                          updateStatus(intervention.id, 'assigned', price);
-                        }
-                      }}
-                      className="w-full bg-green-500 text-white py-2 px-4 rounded text-sm hover:bg-green-600"
-                    >
-                      Proposer ce prix
-                    </button>
+                    <div className="flex space-x-2">
+                      <button
+                        onClick={() => {
+                          const priceInput = document.getElementById(`price-${intervention.id}`);
+                          const price = priceInput.value;
+                          if (price) {
+                            updateStatus(intervention.id, 'assigned', price);
+                          }
+                        }}
+                        className="flex-1 bg-green-500 text-white py-2 px-4 rounded text-sm hover:bg-green-600"
+                      >
+                        Proposer ce prix
+                      </button>
+                      {intervention.service_type === 'onsite' && intervention.user_address && (
+                        <button
+                          onClick={() => openGoogleMapsNavigation(intervention)}
+                          className="bg-blue-500 text-white py-2 px-4 rounded text-sm hover:bg-blue-600"
+                        >
+                          🗺️ GPS
+                        </button>
+                      )}
+                    </div>
                   </div>
                 )}
 
                 {intervention.status === 'in_progress' && (
-                  <button
-                    onClick={() => updateStatus(intervention.id, 'completed')}
-                    className="mt-3 w-full bg-green-500 text-white py-2 px-4 rounded text-sm hover:bg-green-600"
-                  >
-                    Marquer comme terminée
-                  </button>
+                  <div className="flex space-x-2 mt-3">
+                    <button
+                      onClick={() => updateStatus(intervention.id, 'completed')}
+                      className="flex-1 bg-green-500 text-white py-2 px-4 rounded text-sm hover:bg-green-600"
+                    >
+                      Marquer comme terminée
+                    </button>
+                    {intervention.service_type === 'onsite' && intervention.user_address && (
+                      <button
+                        onClick={() => openGoogleMapsNavigation(intervention)}
+                        className="bg-blue-500 text-white py-2 px-4 rounded text-sm hover:bg-blue-600"
+                      >
+                        🗺️ GPS
+                      </button>
+                    )}
+                  </div>
                 )}
               </div>
             ))}
@@ -939,6 +1038,290 @@ const TechnicianDashboard = () => {
           </div>
         </div>
       </div>
+    </div>
+  );
+};
+
+// Interface Administrateur
+const AdminDashboard = () => {
+  const [dashboardData, setDashboardData] = useState(null);
+  const [users, setUsers] = useState([]);
+  const [interventions, setInterventions] = useState([]);
+  const [payments, setPayments] = useState([]);
+  const [activeTab, setActiveTab] = useState('dashboard');
+
+  useEffect(() => {
+    fetchDashboardData();
+    fetchUsers();
+    fetchInterventions();
+    fetchPayments();
+  }, []);
+
+  const fetchDashboardData = async () => {
+    try {
+      const response = await axios.get(`${API}/admin/dashboard`);
+      setDashboardData(response.data);
+    } catch (error) {
+      console.error('Erreur lors de la récupération du tableau de bord:', error);
+    }
+  };
+
+  const fetchUsers = async () => {
+    try {
+      const response = await axios.get(`${API}/admin/users`);
+      setUsers(response.data);
+    } catch (error) {
+      console.error('Erreur lors de la récupération des utilisateurs:', error);
+    }
+  };
+
+  const fetchInterventions = async () => {
+    try {
+      const response = await axios.get(`${API}/admin/interventions`);
+      setInterventions(response.data);
+    } catch (error) {
+      console.error('Erreur lors de la récupération des interventions:', error);
+    }
+  };
+
+  const fetchPayments = async () => {
+    try {
+      const response = await axios.get(`${API}/admin/payments`);
+      setPayments(response.data);
+    } catch (error) {
+      console.error('Erreur lors de la récupération des paiements:', error);
+    }
+  };
+
+  const updateUserStatus = async (userId, active) => {
+    try {
+      await axios.put(`${API}/admin/users/${userId}/status`, { active });
+      fetchUsers();
+    } catch (error) {
+      console.error('Erreur lors de la mise à jour du statut utilisateur:', error);
+    }
+  };
+
+  const resolveIntervention = async (interventionId, resolution) => {
+    try {
+      await axios.post(`${API}/admin/interventions/${interventionId}/resolve`, { resolution });
+      fetchInterventions();
+    } catch (error) {
+      console.error('Erreur lors de la résolution de l\'intervention:', error);
+    }
+  };
+
+  const sendNotification = async (userId, title, message) => {
+    try {
+      await axios.post(`${API}/notifications/send-push`, { user_id: userId, title, message });
+      alert('Notification envoyée avec succès');
+    } catch (error) {
+      console.error('Erreur lors de l\'envoi de la notification:', error);
+    }
+  };
+
+  return (
+    <div className="container mx-auto px-4 py-8">
+      <h2 className="text-3xl font-bold text-gray-900 mb-6">Interface Administrateur</h2>
+      
+      {/* Navigation des onglets */}
+      <div className="flex space-x-4 mb-6 border-b">
+        {['dashboard', 'users', 'interventions', 'payments'].map((tab) => (
+          <button
+            key={tab}
+            onClick={() => setActiveTab(tab)}
+            className={`px-4 py-2 font-medium ${
+              activeTab === tab
+                ? 'text-blue-600 border-b-2 border-blue-600'
+                : 'text-gray-600 hover:text-gray-800'
+            }`}
+          >
+            {tab === 'dashboard' ? 'Tableau de bord' :
+             tab === 'users' ? 'Utilisateurs' :
+             tab === 'interventions' ? 'Interventions' : 'Paiements'}
+          </button>
+        ))}
+      </div>
+
+      {/* Tableau de bord */}
+      {activeTab === 'dashboard' && dashboardData && (
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 mb-8">
+          <div className="bg-white p-6 rounded-lg shadow-md">
+            <h3 className="text-lg font-semibold text-gray-900">Clients</h3>
+            <p className="text-3xl font-bold text-blue-600">{dashboardData.total_users}</p>
+          </div>
+          <div className="bg-white p-6 rounded-lg shadow-md">
+            <h3 className="text-lg font-semibold text-gray-900">Techniciens</h3>
+            <p className="text-3xl font-bold text-green-600">{dashboardData.total_technicians}</p>
+          </div>
+          <div className="bg-white p-6 rounded-lg shadow-md">
+            <h3 className="text-lg font-semibold text-gray-900">Interventions</h3>
+            <p className="text-3xl font-bold text-purple-600">{dashboardData.total_interventions}</p>
+            <p className="text-sm text-gray-600">Taux de réussite: {dashboardData.completion_rate}%</p>
+          </div>
+          <div className="bg-white p-6 rounded-lg shadow-md">
+            <h3 className="text-lg font-semibold text-gray-900">Revenus</h3>
+            <p className="text-3xl font-bold text-yellow-600">{dashboardData.total_revenue}€</p>
+            <p className="text-sm text-gray-600">Note moyenne: {dashboardData.average_rating}/5</p>
+          </div>
+        </div>
+      )}
+
+      {/* Gestion des utilisateurs */}
+      {activeTab === 'users' && (
+        <div className="bg-white rounded-lg shadow-md overflow-hidden">
+          <div className="p-6 border-b">
+            <h3 className="text-xl font-semibold">Gestion des utilisateurs</h3>
+          </div>
+          <div className="overflow-x-auto">
+            <table className="min-w-full divide-y divide-gray-200">
+              <thead className="bg-gray-50">
+                <tr>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Nom</th>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Email</th>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Type</th>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Statut</th>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Actions</th>
+                </tr>
+              </thead>
+              <tbody className="bg-white divide-y divide-gray-200">
+                {users.map((user) => (
+                  <tr key={user.id}>
+                    <td className="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900">
+                      {user.name}
+                    </td>
+                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
+                      {user.email}
+                    </td>
+                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
+                      {user.user_type === 'user' ? 'Client' : 
+                       user.user_type === 'technician' ? 'Technicien' : 'Admin'}
+                    </td>
+                    <td className="px-6 py-4 whitespace-nowrap">
+                      <span className={`px-2 py-1 text-xs font-medium rounded-full ${
+                        user.active !== false ? 'bg-green-100 text-green-800' : 'bg-red-100 text-red-800'
+                      }`}>
+                        {user.active !== false ? 'Actif' : 'Suspendu'}
+                      </span>
+                    </td>
+                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
+                      <div className="flex space-x-2">
+                        <button
+                          onClick={() => updateUserStatus(user.id, user.active === false)}
+                          className={`px-3 py-1 text-xs rounded ${
+                            user.active !== false 
+                              ? 'bg-red-500 text-white hover:bg-red-600' 
+                              : 'bg-green-500 text-white hover:bg-green-600'
+                          }`}
+                        >
+                          {user.active !== false ? 'Suspendre' : 'Activer'}
+                        </button>
+                        <button
+                          onClick={() => {
+                            const title = prompt('Titre de la notification:');
+                            const message = prompt('Message:');
+                            if (title && message) {
+                              sendNotification(user.id, title, message);
+                            }
+                          }}
+                          className="px-3 py-1 text-xs bg-blue-500 text-white rounded hover:bg-blue-600"
+                        >
+                          Notifier
+                        </button>
+                      </div>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
+      {/* Gestion des interventions */}
+      {activeTab === 'interventions' && (
+        <div className="bg-white rounded-lg shadow-md">
+          <div className="p-6 border-b">
+            <h3 className="text-xl font-semibold">Gestion des interventions</h3>
+          </div>
+          <div className="p-6 space-y-4">
+            {interventions.map((intervention) => (
+              <div key={intervention.id} className="border rounded-lg p-4">
+                <div className="flex justify-between items-start mb-2">
+                  <h4 className="font-semibold">{intervention.title}</h4>
+                  <span className={`px-2 py-1 text-xs rounded ${
+                    intervention.status === 'pending' ? 'bg-yellow-100 text-yellow-800' :
+                    intervention.status === 'completed' ? 'bg-green-100 text-green-800' :
+                    'bg-blue-100 text-blue-800'
+                  }`}>
+                    {intervention.status}
+                  </span>
+                </div>
+                <p className="text-gray-600 text-sm mb-2">{intervention.description}</p>
+                <div className="text-xs text-gray-500 mb-3">
+                  Budget: {intervention.budget_min}€ - {intervention.budget_max}€
+                </div>
+                <button
+                  onClick={() => {
+                    const resolution = prompt('Résolution administrative:');
+                    if (resolution) {
+                      resolveIntervention(intervention.id, resolution);
+                    }
+                  }}
+                  className="px-3 py-1 text-xs bg-orange-500 text-white rounded hover:bg-orange-600"
+                >
+                  Résoudre
+                </button>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Gestion des paiements */}
+      {activeTab === 'payments' && (
+        <div className="bg-white rounded-lg shadow-md overflow-hidden">
+          <div className="p-6 border-b">
+            <h3 className="text-xl font-semibold">Historique des paiements</h3>
+          </div>
+          <div className="overflow-x-auto">
+            <table className="min-w-full divide-y divide-gray-200">
+              <thead className="bg-gray-50">
+                <tr>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Date</th>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Montant</th>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Commission</th>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Statut</th>
+                </tr>
+              </thead>
+              <tbody className="bg-white divide-y divide-gray-200">
+                {payments.map((payment) => (
+                  <tr key={payment.id}>
+                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
+                      {new Date(payment.created_at).toLocaleDateString('fr-FR')}
+                    </td>
+                    <td className="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900">
+                      {payment.amount}€
+                    </td>
+                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
+                      {payment.commission_amount}€
+                    </td>
+                    <td className="px-6 py-4 whitespace-nowrap">
+                      <span className={`px-2 py-1 text-xs font-medium rounded-full ${
+                        payment.payment_status === 'paid' ? 'bg-green-100 text-green-800' :
+                        payment.payment_status === 'pending' ? 'bg-yellow-100 text-yellow-800' :
+                        'bg-red-100 text-red-800'
+                      }`}>
+                        {payment.payment_status}
+                      </span>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
     </div>
   );
 };
